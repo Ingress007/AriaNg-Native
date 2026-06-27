@@ -34,6 +34,22 @@
             }, true);
         };
 
+        $scope.restart = function () {
+            ariaNgCommonService.confirm('Confirm Restart', 'Are you sure you want to restart aria2? This requires aria2 to be managed by a service (e.g. systemd, procd) so it can be started up again automatically.', 'warning', function (status) {
+                return aria2SettingService.shutdown(function (response) {
+                    if (response.success && response.data === 'OK') {
+                        ariaNgCommonService.showOperationSucceeded('Aria2 is restarting. Reconnecting...');
+
+                        $timeout(function () {
+                            if ($scope.context.isSupportReconnect) {
+                                aria2SettingService.reconnect();
+                            }
+                        }, 3000);
+                    }
+                });
+            }, true);
+        };
+
         $rootScope.$watch('taskContext.rpcStatus', function (value) {
             if (value === 'Connected') {
                 aria2SettingService.getAria2Status(function (response) {
