@@ -104,6 +104,57 @@
         .infobox-arrow.down { color: #2196f3; }
         .infobox-arrow.up { color: #ff9800; }
 
+        /* Progress view: aggregate download progress bar + speed + task count */
+        .infobox-progress-bar {
+            width: 82px;
+            height: 13px;
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 3px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .infobox-progress-fill {
+            height: 100%;
+            width: 0;
+            background: #2196f3;
+            transition: width 0.3s ease;
+        }
+
+        .infobox-progress-text {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8px;
+            font-weight: bold;
+            color: #fff;
+            text-shadow: 0 0 2px rgba(0, 0, 0, 0.85);
+        }
+
+        .infobox-progress-meta {
+            margin-top: 3px;
+            gap: 6px;
+        }
+
+        .infobox-task-badge {
+            min-width: 14px;
+            height: 13px;
+            padding: 0 4px;
+            border-radius: 7px;
+            background: #2196f3;
+            color: #fff;
+            font-size: 8px;
+            font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         .infobox-switch-hint {
             font-size: 7px;
             color: rgba(255, 255, 255, 0.15);
@@ -142,6 +193,18 @@
                 <span class="infobox-value color-upload-speed" id="val-upload-speed">0 KB/s</span>
             </div>
         </div>
+        <!-- Progress view (auto-shown while downloading) -->
+        <div id="view-progress" class="infobox-view" style="display: none;">
+            <div class="infobox-progress-bar">
+                <div class="infobox-progress-fill" id="progress-fill"></div>
+                <span class="infobox-progress-text" id="progress-text">0%</span>
+            </div>
+            <div class="infobox-line infobox-progress-meta">
+                <span class="infobox-arrow down">&#9660;</span>
+                <span class="infobox-value color-download-speed" id="progress-speed">0 KB/s</span>
+                <span class="infobox-task-badge" id="progress-count">0</span>
+            </div>
+        </div>
         <span class="infobox-switch-hint">&#9881;</span>
     </div>
 </div>
@@ -150,11 +213,16 @@
     const { ipcRenderer } = require('electron');
 
     var currentView = 'task';
+    var lastDownloadingCount = 0;
     var isDragging = false;
     var hasMoved = false;
     var lastScreenX = 0;
     var lastScreenY = 0;
     var wheelCooldown = false;
+
+    // Scroll-wheel toggle order. The progress view is intentionally excluded:
+    // it is shown (and locked) automatically while downloading, never via the wheel.
+    var viewOrder = ['task', 'speed'];
 
     // Default labels — overwritten when the renderer pushes localized strings
     // via the on-infobox-stat-update payload (if labels field is present).
@@ -169,7 +237,27 @@
     function showView(viewName) {
         document.getElementById('view-task').style.display = (viewName === 'task') ? '' : 'none';
         document.getElementById('view-speed').style.display = (viewName === 'speed') ? '' : 'none';
+        document.getElementById('view-progress').style.display = (viewName === 'progress') ? '' : 'none';
         currentView = viewName;
+    }
+
+    function cycleView(direction) {
+        var idx = viewOrder.indexOf(currentView);
+        if (idx < 0) {
+            idx = 0;
+        }
+        idx = (idx + direction + viewOrder.length) % viewOrder.length;
+        showView(viewOrder[idx]);
+    }
+
+    function formatPercent(percent) {
+        if (!percent || percent <= 0) {
+            return '0%';
+        }
+        if (percent >= 99.95) {
+            return '100%';
+        }
+        return percent.toFixed(1) + '%';
     }
 
     function formatSpeed(bytesPerSec) {
@@ -194,6 +282,27 @@
 
         document.getElementById('val-download-speed').textContent = formatSpeed(data.downloadSpeed);
         document.getElementById('val-upload-speed').textContent = formatSpeed(data.uploadSpeed);
+
+        // Progress view: aggregate download progress + speed + downloading task count.
+        var downloadingCount = data.downloadingCount || 0;
+        var downloadingPercent = data.downloadingPercent || 0;
+
+        document.getElementById('progress-fill').style.width = Math.max(0, Math.min(100, downloadingPercent)) + '%';
+        document.getElementById('progress-text').textContent = formatPercent(downloadingPercent);
+        document.getElementById('progress-speed').textContent = formatSpeed(data.downloadSpeed);
+        document.getElementById('progress-count').textContent = downloadingCount;
+
+        // While any task is downloading, lock the box to the progress view
+        // (the wheel is disabled). Once everything stops, fall back to the task view.
+        if (downloadingCount > 0) {
+            if (currentView !== 'progress') {
+                showView('progress');
+            }
+        } else if (currentView === 'progress') {
+            showView('task');
+        }
+
+        lastDownloadingCount = downloadingCount;
 
         if (data.labels) {
             applyLabels(data.labels);
@@ -246,15 +355,17 @@
 
     function onCardWheel(e) {
         e.preventDefault();
+        // Locked to the progress view while downloading — ignore wheel toggling.
+        if (lastDownloadingCount > 0) return;
         if (wheelCooldown) return;
         wheelCooldown = true;
         setTimeout(function () { wheelCooldown = false; }, 250);
 
-        // Direction: down → speed, up → task. Both work as a toggle either way.
+        // Scroll down → next view, scroll up → previous view (task ⇄ speed).
         if (e.deltaY > 0) {
-            showView(currentView === 'task' ? 'speed' : 'task');
+            cycleView(1);
         } else if (e.deltaY < 0) {
-            showView(currentView === 'task' ? 'speed' : 'task');
+            cycleView(-1);
         }
     }
 

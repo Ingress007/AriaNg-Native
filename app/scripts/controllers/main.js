@@ -4,9 +4,9 @@
     angular.module('ariaNg').controller('MainController', ['$rootScope', '$scope', '$route', '$window', '$location', '$document', '$interval', 'clipboard', 'aria2RpcErrors', 'ariaNgCommonService', 'ariaNgVersionService', 'ariaNgNotificationService', 'ariaNgSettingService', 'ariaNgMonitorService', 'ariaNgTitleService', 'ariaNgLocalizationService', 'aria2TaskService', 'aria2SettingService', 'ariaNgNativeElectronService', function ($rootScope, $scope, $route, $window, $location, $document, $interval, clipboard, aria2RpcErrors, ariaNgCommonService, ariaNgVersionService, ariaNgNotificationService, ariaNgSettingService, ariaNgMonitorService, ariaNgTitleService, ariaNgLocalizationService, aria2TaskService, aria2SettingService, ariaNgNativeElectronService) {
         var pageTitleRefreshPromise = null;
         var globalStatRefreshPromise = null;
-        // Tracks an in-flight tellStopped to serialize sendInfoboxStat calls —
-        // prevents racing responses from overwriting $scope.infoboxCounts out of order
-        // and avoids hammering aria2 with duplicate requests.
+        // Tracks an in-flight infobox stat chain (tellActive + tellStopped) to serialize
+        // sendInfoboxStat calls — prevents racing responses from overwriting
+        // $scope.infoboxCounts out of order and avoids hammering aria2 with duplicates.
         var infoboxStatInFlight = false;
 
         var getTaskListPageType = function () {
@@ -65,45 +65,70 @@
 
             infoboxStatInFlight = true;
 
-            // stopped/completed counts need tellStopped to separate them.
-            // Note: tellStopped is capped (default ~1000) so counts may undercount for huge stopped lists.
-            aria2TaskService.getTaskList('stopped', false, function (response) {
-                infoboxStatInFlight = false;
+            // First pull active (downloading) tasks to compute aggregate progress.
+            // "Started downloading" = metadata resolved (totalLength > 0); this excludes
+            // magnet/metalink tasks still fetching their metadata.
+            aria2TaskService.getTaskList('downloading', false, function (activeResponse) {
+                var downloadingCount = 0;
+                var aggCompletedLength = 0;
+                var aggTotalLength = 0;
 
-                var stoppedCount = 0;
-                var completedCount = 0;
+                if (activeResponse.success && angular.isArray(activeResponse.data)) {
+                    for (var i = 0; i < activeResponse.data.length; i++) {
+                        var task = activeResponse.data[i];
 
-                if (response.success && angular.isArray(response.data)) {
-                    for (var i = 0; i < response.data.length; i++) {
-                        var status = response.data[i].status;
-                        if (status === 'complete') {
-                            completedCount++;
-                        } else if (status === 'error' || status === 'removed') {
-                            stoppedCount++;
+                        if (task.totalLength > 0) {
+                            downloadingCount++;
+                            aggCompletedLength += task.completedLength;
+                            aggTotalLength += task.totalLength;
                         }
                     }
                 }
 
-                // Expose to sidebar via $scope (used by index.html bindings)
-                $scope.infoboxCounts = {
-                    completedCount: completedCount,
-                    stoppedCount: stoppedCount
-                };
+                var downloadingPercent = (aggTotalLength > 0 ? aggCompletedLength / aggTotalLength * 100 : 0);
 
-                ariaNgNativeElectronService.sendInfoboxStat({
-                    activeCount: activeCount,
-                    waitingCount: waitingCount,
-                    completedCount: completedCount,
-                    stoppedCount: stoppedCount,
-                    downloadSpeed: stat.downloadSpeed || 0,
-                    uploadSpeed: stat.uploadSpeed || 0,
-                    labels: {
-                        active: ariaNgLocalizationService.getLocalizedText('infobox.Active'),
-                        waiting: ariaNgLocalizationService.getLocalizedText('infobox.Waiting'),
-                        completed: ariaNgLocalizationService.getLocalizedText('infobox.Completed'),
-                        stopped: ariaNgLocalizationService.getLocalizedText('infobox.Stopped')
+                // Then pull stopped tasks to separate completed/stopped counts.
+                // Note: tellStopped is capped (default ~1000) so counts may undercount for huge stopped lists.
+                aria2TaskService.getTaskList('stopped', false, function (response) {
+                    infoboxStatInFlight = false;
+
+                    var stoppedCount = 0;
+                    var completedCount = 0;
+
+                    if (response.success && angular.isArray(response.data)) {
+                        for (var j = 0; j < response.data.length; j++) {
+                            var status = response.data[j].status;
+                            if (status === 'complete') {
+                                completedCount++;
+                            } else if (status === 'error' || status === 'removed') {
+                                stoppedCount++;
+                            }
+                        }
                     }
-                });
+
+                    // Expose to sidebar via $scope (used by index.html bindings)
+                    $scope.infoboxCounts = {
+                        completedCount: completedCount,
+                        stoppedCount: stoppedCount
+                    };
+
+                    ariaNgNativeElectronService.sendInfoboxStat({
+                        activeCount: activeCount,
+                        waitingCount: waitingCount,
+                        completedCount: completedCount,
+                        stoppedCount: stoppedCount,
+                        downloadSpeed: stat.downloadSpeed || 0,
+                        uploadSpeed: stat.uploadSpeed || 0,
+                        downloadingCount: downloadingCount,
+                        downloadingPercent: downloadingPercent,
+                        labels: {
+                            active: ariaNgLocalizationService.getLocalizedText('infobox.Active'),
+                            waiting: ariaNgLocalizationService.getLocalizedText('infobox.Waiting'),
+                            completed: ariaNgLocalizationService.getLocalizedText('infobox.Completed'),
+                            stopped: ariaNgLocalizationService.getLocalizedText('infobox.Stopped')
+                        }
+                    });
+                }, true);
             }, true);
         };
 
